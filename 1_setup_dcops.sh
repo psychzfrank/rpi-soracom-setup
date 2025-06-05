@@ -23,6 +23,9 @@ run_cmd() {
 # Start logging
 echo "===== DCOPS Setup Started at $(date) =====" >>"$LOGFILE"
 
+# Set root password
+run_cmd "Set root password" passwd
+
 # Enable root SSH login
 run_cmd "Backup SSH config" cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 run_cmd "Enable PermitRootLogin in SSH config" sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
@@ -35,15 +38,16 @@ run_cmd "Update and upgrade apt packages" bash -c "apt update && apt upgrade -y"
 run_cmd "Install UFW" apt install -y ufw
 run_cmd "Allow SSH in UFW" ufw allow ssh
 run_cmd "Allow TCP port 22 in UFW" ufw allow 22/tcp
-run_cmd "Enable UFW firewall" ufw --force enable
-echo "Enabling UFW firewall (timeout after 15 seconds)..."
-if timeout 15s sudo ufw --force enable; then
-    echo "UFW enabled successfully."
-else
-    echo "Warning: UFW enable command timed out or failed, continuing anyway..."
-fi
-
 run_cmd "Check UFW status" ufw status
+run_cmd "Enable UFW firewall" ufw --force enable
+
+# Add operator1 user
+run_cmd "Add user operator1" adduser --gecos "" operator1
+run_cmd "Set password for operator1" bash -c "echo 'operator1:operator1' | chpasswd"
+run_cmd "Add operator1 to dialout group" adduser operator1 dialout
+
+# Install screen utility
+run_cmd "Install screen package" apt install -y screen
 
 # Ask about network setup
 read -p "Do you want to configure static Ethernet? (y/N): " do_net
@@ -90,4 +94,3 @@ else
     done
     echo "Check the log at: $LOGFILE"
 fi
-
