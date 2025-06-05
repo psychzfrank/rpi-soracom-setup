@@ -35,8 +35,15 @@ run_cmd "Update and upgrade apt packages" bash -c "apt update && apt upgrade -y"
 run_cmd "Install UFW" apt install -y ufw
 run_cmd "Allow SSH in UFW" ufw allow ssh
 run_cmd "Allow TCP port 22 in UFW" ufw allow 22/tcp
-run_cmd "Check UFW status" ufw status
 run_cmd "Enable UFW firewall" ufw --force enable
+echo "Enabling UFW firewall (timeout after 15 seconds)..."
+if timeout 15s sudo ufw --force enable; then
+    echo "UFW enabled successfully."
+else
+    echo "Warning: UFW enable command timed out or failed, continuing anyway..."
+fi
+
+run_cmd "Check UFW status" ufw status
 
 # Ask about network setup
 read -p "Do you want to configure static Ethernet? (y/N): " do_net
