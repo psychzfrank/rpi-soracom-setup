@@ -23,9 +23,6 @@ run_cmd() {
 # Start logging
 echo "===== DCOPS Setup Started at $(date) =====" >>"$LOGFILE"
 
-# Set root password
-run_cmd "Set root password" passwd
-
 # Enable root SSH login
 run_cmd "Backup SSH config" cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 run_cmd "Enable PermitRootLogin in SSH config" sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
