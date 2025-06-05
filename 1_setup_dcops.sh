@@ -38,9 +38,6 @@ run_cmd "Allow TCP port 22 in UFW" ufw allow 22/tcp
 run_cmd "Check UFW status" ufw status
 run_cmd "Enable UFW firewall" ufw --force enable
 
-# Install screen utility
-run_cmd "Install screen package" apt install -y screen
-
 # Ask about network setup
 read -p "Do you want to configure static Ethernet? (y/N): " do_net
 if [[ "$do_net" =~ ^[Yy]$ ]]; then
