@@ -41,11 +41,6 @@ run_cmd "Allow TCP port 22 in UFW" ufw allow 22/tcp
 run_cmd "Check UFW status" ufw status
 run_cmd "Enable UFW firewall" ufw --force enable
 
-# Add operator1 user
-run_cmd "Add user operator1" adduser --gecos "" operator1
-run_cmd "Set password for operator1" bash -c "echo 'operator1:operator1' | chpasswd"
-run_cmd "Add operator1 to dialout group" adduser operator1 dialout
-
 # Install screen utility
 run_cmd "Install screen package" apt install -y screen
 
