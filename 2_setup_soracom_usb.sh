@@ -45,7 +45,9 @@ sudo udevadm trigger
 # 4. Prompt to reboot
 echo "===== Soracom USB setup complete ====="
 echo "Reboot required to apply changes."
-read -p "Would you like to reboot now? (y/N): " confirm
+echo -n "Would you like to reboot now? (y/N): " > /dev/tty
+read confirm < /dev/tty
+
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
     echo "Rebooting..."
     sudo reboot
