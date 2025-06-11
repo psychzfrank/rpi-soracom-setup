@@ -50,15 +50,25 @@ run_cmd "Enable UFW firewall" ufw --force enable
 run_cmd "Install screen package" apt install -y screen
 
 # Ask about network setup
-read -p "Do you want to configure static Ethernet? (y/N): " do_net
+echo -n "Do you want to configure static Ethernet? (y/N): " > /dev/tty
+read do_net < /dev/tty
+
 if [[ "$do_net" =~ ^[Yy]$ ]]; then
     log_step "Network Configuration - Static IP"
 
     run_cmd "Show current network connections" nmcli con show
 
-    read -p "Enter interface name (e.g., eth0): " eth_if
-    read -p "Enter static IP with CIDR (e.g., 108.1.2.2/30): " static_ip
-    read -p "Enter gateway (e.g., 108.1.2.1): " gateway
+    # Prompt and read interface name
+    echo -n "Enter interface name (e.g., eth0): " > /dev/tty
+    read eth_if < /dev/tty
+
+    # Prompt and read static IP
+    echo -n "Enter static IP with CIDR (e.g., 108.1.2.2/30): " > /dev/tty
+    read static_ip < /dev/tty
+
+    # Prompt and read gateway
+    echo -n "Enter gateway (e.g., 108.1.2.1): " > /dev/tty
+    read gateway < /dev/tty
 
     run_cmd "Add static-eth connection" \
         nmcli con add type ethernet con-name static-eth ifname "$eth_if" \
