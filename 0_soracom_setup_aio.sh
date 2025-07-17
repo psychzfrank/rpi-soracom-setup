@@ -69,6 +69,58 @@ run_cmd "Set UFW to allow outbound" ufw default allow outgoing
 run_cmd "Check UFW status" ufw status
 run_cmd "Enable UFW firewall" ufw --force enable
 
+
+# === Time sync script create ===
+
+
+echo "Creating time sync script..."
+cat <<'EOF' >/usr/local/bin/sync_time_ppp.sh
+#!/bin/bash
+LOGFILE="/var/log/sync_time_ppp.log"
+exec >>"\$LOGFILE" 2>&1
+
+echo "[\$(date)] Startup sync script running..."
+
+# Wait for PPP interface
+echo "Waiting for ppp0 interface..."
+while ! ip a show ppp0 &>/dev/null; do sleep 1; done
+echo "ppp0 is up!"
+
+# Wait for internet (via ping)
+echo "Waiting for internet connectivity..."
+while ! ping -c 1 8.8.8.8 &>/dev/null; do sleep 1; done
+echo "Internet is available."
+
+# Sync time
+echo "Restarting systemd-timesyncd to sync time..."
+systemctl restart systemd-timesyncd
+
+echo "[\$(date)] Time sync complete."
+EOF
+
+chmod +x /usr/local/bin/sync_time_ppp.sh
+
+echo "Creating systemd service..."
+cat <<EOF >/etc/systemd/system/sync-time-ppp.service
+[Unit]
+Description=Wait for PPP and sync time
+After=network.target
+Requires=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sync_time_ppp.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "Enabling sync-time-ppp.service..."
+systemctl enable sync-time-ppp.service
+# === Time sync script end ===
+
+
 run_cmd "Install screen package" apt install -y screen
 
 # === Optional: Static Ethernet Setup ===
