@@ -54,7 +54,7 @@ run_cmd "Trigger udev" udevadm trigger
 
 # === System Customizations ===
 
-run_cmd "Set root password" passwd
+run_cmd "Set root password. Hint: Type password once and hit Enter. Then type again and hit Enter again." passwd
 run_cmd "Backup SSH config" cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 run_cmd "Enable PermitRootLogin in SSH config" sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 run_cmd "Restart SSH service" systemctl restart ssh || service ssh restart
