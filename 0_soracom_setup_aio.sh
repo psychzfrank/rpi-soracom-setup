@@ -70,62 +70,63 @@ run_cmd "Check UFW status" ufw status
 run_cmd "Enable UFW firewall" ufw --force enable
 
 
-# === Time sync script create ===
-
-
-echo "Creating time sync script..."
-cat <<'EOF' >/usr/local/bin/sync_time_ppp.sh
+# Create the time sync check script
+sudo tee /usr/local/bin/check_and_sync_time.sh > /dev/null <<'EOF'
 #!/bin/bash
-LOGFILE="/var/log/sync_time_ppp.log"
-exec >>"\$LOGFILE" 2>&1
+if timedatectl status | grep -q "System clock synchronized: yes"; then
+    echo "$(date): Time already synchronized."
+    exit 0
+fi
 
-echo "[\$(date)] Startup sync script running..."
+if ip a show ppp0 2>/dev/null | grep -q "inet "; then
+    echo "$(date): ppp0 up."
+elif ip a show wwan0 2>/dev/null | grep -q "inet "; then
+    echo "$(date): wwan0 up."
+else
+    echo "$(date): No cellular network interface with IP, skipping time sync."
+    exit 1
+fi
 
-# Wait for PPP interface
-echo "Waiting for ppp0 or wwan0 interface with IP..."
-
-while true; do
-    if ip a show ppp0 2>/dev/null | grep -q "inet "; then
-        echo "ppp0 is up with IP!"
-        break
-    elif ip a show wwan0 2>/dev/null | grep -q "inet "; then
-        echo "wwan0 is up with IP!"
-        break
-    fi
-    sleep 1
-done
-
-echo "Waiting for internet connectivity..."
-while ! ping -c 1 8.8.8.8 &>/dev/null; do
-    sleep 1
-done
-
-echo "Internet is available. Syncing system time..."
-sudo systemctl restart systemd-timesyncd
-
-echo "[\$(date)] Time sync complete."
+if ping -c 1 8.8.8.8 &>/dev/null; then
+    echo "$(date): Internet available, restarting timesyncd..."
+    sudo systemctl restart systemd-timesyncd
+else
+    echo "$(date): No internet connectivity, skipping time sync."
+    exit 1
+fi
 EOF
 
-chmod +x /usr/local/bin/sync_time_ppp.sh
+sudo chmod +x /usr/local/bin/check_and_sync_time.sh
 
-echo "Creating systemd service..."
-cat <<EOF >/etc/systemd/system/sync-time-ppp.service
+# Create systemd service
+sudo tee /etc/systemd/system/check-time.service > /dev/null <<EOF
 [Unit]
-Description=Wait for PPP and sync time
-After=network.target
-Requires=network.target
+Description=Check and sync system time
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/sync_time_ppp.sh
-RemainAfterExit=true
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/usr/local/bin/check_and_sync_time.sh
 EOF
 
-echo "Enabling sync-time-ppp.service..."
-systemctl enable sync-time-ppp.service
+# Create systemd timer
+sudo tee /etc/systemd/system/check-time.timer > /dev/null <<EOF
+[Unit]
+Description=Run time sync check every 2 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# Reload systemd, enable and start timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now check-time.timer
 # === Time sync script end ===
 
 
