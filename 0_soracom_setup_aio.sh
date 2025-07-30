@@ -82,18 +82,26 @@ exec >>"\$LOGFILE" 2>&1
 echo "[\$(date)] Startup sync script running..."
 
 # Wait for PPP interface
-echo "Waiting for ppp0 interface..."
-while ! ip a show ppp0 &>/dev/null; do sleep 1; done
-echo "ppp0 is up!"
+echo "Waiting for ppp0 or wwan0 interface with IP..."
 
-# Wait for internet (via ping)
+while true; do
+    if ip a show ppp0 2>/dev/null | grep -q "inet "; then
+        echo "ppp0 is up with IP!"
+        break
+    elif ip a show wwan0 2>/dev/null | grep -q "inet "; then
+        echo "wwan0 is up with IP!"
+        break
+    fi
+    sleep 1
+done
+
 echo "Waiting for internet connectivity..."
-while ! ping -c 1 8.8.8.8 &>/dev/null; do sleep 1; done
-echo "Internet is available."
+while ! ping -c 1 8.8.8.8 &>/dev/null; do
+    sleep 1
+done
 
-# Sync time
-echo "Restarting systemd-timesyncd to sync time..."
-systemctl restart systemd-timesyncd
+echo "Internet is available. Syncing system time..."
+sudo systemctl restart systemd-timesyncd
 
 echo "[\$(date)] Time sync complete."
 EOF
