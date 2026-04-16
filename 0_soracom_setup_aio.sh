@@ -1,78 +1,119 @@
 #!/bin/bash
+set -u
 
 LOGFILE="/var/log/dcops_setup.log"
 ERRORS=()
+
 touch "$LOGFILE"
-exec 2>>"$LOGFILE"
+exec > >(tee -a "$LOGFILE") 2>&1
 
 log_step() {
+    echo
     echo "==> $1"
 }
 
 run_cmd() {
-    description="$1"
+    local description="$1"
     shift
     log_step "$description"
     "$@"
-    if [[ $? -ne 0 ]]; then
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
         ERRORS+=("$description")
-        echo "ERROR during: $description" >>"$LOGFILE"
+        echo "ERROR during: $description (exit $rc)"
     fi
+    return $rc
 }
 
-echo "===== DCOPS Setup Started at $(date) =====" >>"$LOGFILE"
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
 
-# === Check and Run Soracom setup_air.sh ===
-if [[ -f /etc/udev/rules.d/40-usb_modeswitch.rules ]]; then
-    log_step "Soracom setup_air.sh already appears to have been run. Skipping."
+soracom_peer_exists() {
+    [[ -d /etc/ppp/peers ]] || return 1
+    find /etc/ppp/peers -maxdepth 1 -type f | grep -Eiq '/(soracom|soracom-air|air)$'
+}
+
+find_soracom_peer() {
+    find /etc/ppp/peers -maxdepth 1 -type f 2>/dev/null \
+        | sed 's|.*/||' \
+        | grep -Ei '^(soracom|soracom-air|air)$' \
+        | head -n1
+}
+
+echo "===== DCOPS Setup Started at $(date) ====="
+
+# --- Basic package sanity ---
+if ! command_exists curl; then
+    run_cmd "Install curl" apt update
+    run_cmd "Install curl package" apt install -y curl
+fi
+
+run_cmd "Install required packages" apt install -y \
+    ppp usb-modeswitch modemmanager network-manager screen ufw
+
+# --- Soracom setup ---
+if soracom_peer_exists; then
+    log_step "Soracom PPP peer already exists. Skipping setup_air.sh."
 else
-    log_step "Downloading and running Soracom setup_air.sh"
-    curl -fsSL https://soracom-files.s3.amazonaws.com/setup_air.sh -o /tmp/setup_air.sh
-    chmod +x /tmp/setup_air.sh
+    log_step "Soracom PPP peer missing. Downloading and running Soracom setup_air.sh."
+    run_cmd "Download Soracom setup_air.sh" \
+        curl -fsSL https://soracom-files.s3.amazonaws.com/setup_air.sh -o /tmp/setup_air.sh
+    run_cmd "Make setup_air.sh executable" chmod +x /tmp/setup_air.sh
     run_cmd "Run Soracom setup_air.sh" bash /tmp/setup_air.sh
 fi
 
-# === Additional modem reliability fixes ===
-
+# --- Additional modem reliability fixes ---
 CMDLINE_FILE="/boot/firmware/cmdline.txt"
-if grep -q "usbcore.autosuspend=-1" "$CMDLINE_FILE"; then
-    echo "usbcore.autosuspend=-1 already present in cmdline.txt"
+if [[ -f "$CMDLINE_FILE" ]]; then
+    if grep -q 'usbcore.autosuspend=-1' "$CMDLINE_FILE"; then
+        log_step "usbcore.autosuspend=-1 already present in $CMDLINE_FILE"
+    else
+        run_cmd "Add usbcore.autosuspend=-1 to cmdline.txt" \
+            sed -i 's|$| usbcore.autosuspend=-1|' "$CMDLINE_FILE"
+    fi
 else
-    echo "Appending usbcore.autosuspend=-1 to cmdline.txt..."
-    run_cmd "Add usbcore.autosuspend=-1 to cmdline.txt" \
-        sed -i 's/$/ usbcore.autosuspend=-1/' "$CMDLINE_FILE"
+    echo "WARNING: $CMDLINE_FILE not found; skipping usbcore.autosuspend change"
+    ERRORS+=("cmdline.txt not found")
 fi
 
 UDEV_RULE='/etc/udev/rules.d/40-usb_modeswitch.rules'
-log_step "Creating udev rule for USB modeswitch"
-sudo tee "$UDEV_RULE" >/dev/null <<EOF
+log_step "Writing USB modeswitch udev rule"
+cat > "$UDEV_RULE" <<'EOF'
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2c7c", ATTR{idProduct}=="0125", RUN+="/usr/sbin/usb_modeswitch -v 2c7c -p 0125 -J"
 EOF
 
 run_cmd "Reload udev rules" udevadm control --reload-rules
 run_cmd "Trigger udev" udevadm trigger
 
-# === System Customizations ===
-
-run_cmd "Set root password. Hint: Type password once and hit Enter. Then type again and hit Enter again." passwd
+# --- SSH and system basics ---
+run_cmd "Set root password" passwd
 run_cmd "Backup SSH config" cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-run_cmd "Enable PermitRootLogin in SSH config" sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-run_cmd "Restart SSH service" systemctl restart ssh || service ssh restart
+
+if grep -qE '^[#[:space:]]*PermitRootLogin' /etc/ssh/sshd_config; then
+    run_cmd "Enable PermitRootLogin in SSH config" \
+        sed -i 's/^[#[:space:]]*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+else
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+fi
+
+run_cmd "Restart SSH service" systemctl restart ssh
 run_cmd "Enable SSH on boot" systemctl enable ssh
 run_cmd "Enable NTP time sync" timedatectl set-ntp true
-run_cmd "Update and upgrade apt packages" bash -c "apt update && apt upgrade -y"
+run_cmd "Update apt package lists" apt update
+run_cmd "Upgrade apt packages" apt upgrade -y
 
-run_cmd "Install UFW" apt install -y ufw
+# --- Firewall ---
 run_cmd "Allow SSH in UFW" ufw allow ssh
 run_cmd "Allow TCP port 22 in UFW" ufw allow 22/tcp
-run_cmd "Set UFW to allow outbound" ufw default allow outgoing
-run_cmd "Check UFW status" ufw status
+run_cmd "Set UFW default allow outgoing" ufw default allow outgoing
 run_cmd "Enable UFW firewall" ufw --force enable
+run_cmd "Check UFW status" ufw status verbose
 
-
-# Create the time sync check script
-sudo tee /usr/local/bin/check_and_sync_time.sh > /dev/null <<'EOF'
+# --- Time sync helper ---
+cat > /usr/local/bin/check_and_sync_time.sh <<'EOF'
 #!/bin/bash
+
 if timedatectl status | grep -q "System clock synchronized: yes"; then
     echo "$(date): Time already synchronized."
     exit 0
@@ -87,19 +128,18 @@ else
     exit 1
 fi
 
-if ping -c 1 8.8.8.8 &>/dev/null; then
+if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
     echo "$(date): Internet available, restarting timesyncd..."
-    sudo systemctl restart systemd-timesyncd
+    systemctl restart systemd-timesyncd
 else
     echo "$(date): No internet connectivity, skipping time sync."
     exit 1
 fi
 EOF
 
-sudo chmod +x /usr/local/bin/check_and_sync_time.sh
+run_cmd "Make time sync helper executable" chmod +x /usr/local/bin/check_and_sync_time.sh
 
-# Create systemd service
-sudo tee /etc/systemd/system/check-time.service > /dev/null <<EOF
+cat > /etc/systemd/system/check-time.service <<'EOF'
 [Unit]
 Description=Check and sync system time
 After=network-online.target
@@ -110,8 +150,7 @@ Type=oneshot
 ExecStart=/usr/local/bin/check_and_sync_time.sh
 EOF
 
-# Create systemd timer
-sudo tee /etc/systemd/system/check-time.timer > /dev/null <<EOF
+cat > /etc/systemd/system/check-time.timer <<'EOF'
 [Unit]
 Description=Run time sync check every 2 hours
 
@@ -124,78 +163,83 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# Reload systemd, enable and start timer
-sudo systemctl daemon-reload
-sudo systemctl enable --now check-time.timer
-# === Time sync script end ===
+run_cmd "Reload systemd daemon" systemctl daemon-reload
+run_cmd "Enable and start check-time.timer" systemctl enable --now check-time.timer
 
-
-run_cmd "Install screen package" apt install -y screen
-
-# === Optional: Static Ethernet Setup ===
+# --- Optional: Static Ethernet Setup ---
 echo -n "Do you want to configure static Ethernet? (y/N): " > /dev/tty
-read do_net < /dev/tty
+read -r do_net < /dev/tty
 
 if [[ "$do_net" =~ ^[Yy]$ ]]; then
     log_step "Network Configuration - Static IP"
     run_cmd "Show current network connections" nmcli con show
 
     echo -n "Enter interface name (e.g., eth0): " > /dev/tty
-    read eth_if < /dev/tty
+    read -r eth_if < /dev/tty
 
     echo -n "Enter static IP with CIDR (e.g., 108.1.2.2/30): " > /dev/tty
-    read static_ip < /dev/tty
+    read -r static_ip < /dev/tty
 
     echo -n "Enter gateway (e.g., 108.1.2.1): " > /dev/tty
-    read gateway < /dev/tty
+    read -r gateway < /dev/tty
 
-    run_cmd "Add static-eth connection" \
-        nmcli con add type ethernet con-name static-eth ifname "$eth_if" \
-        ipv4.addresses "$static_ip" ipv4.gateway "$gateway" \
-        ipv4.dns "1.1.1.1 8.8.8.8" ipv4.method manual
+    if nmcli -t -f NAME con show | grep -Fxq "static-eth"; then
+        run_cmd "Modify existing static-eth connection" \
+            nmcli con modify static-eth \
+            ifname "$eth_if" ipv4.addresses "$static_ip" ipv4.gateway "$gateway" \
+            ipv4.dns "1.1.1.1 8.8.8.8" ipv4.method manual connection.autoconnect yes
+    else
+        run_cmd "Add static-eth connection" \
+            nmcli con add type ethernet con-name static-eth ifname "$eth_if" \
+            ipv4.addresses "$static_ip" ipv4.gateway "$gateway" \
+            ipv4.dns "1.1.1.1 8.8.8.8" ipv4.method manual connection.autoconnect yes
+    fi
 
-    run_cmd "Restart static-eth connection" \
-        bash -c "nmcli con down static-eth && nmcli con up static-eth"
-
+    run_cmd "Bring up static-eth connection" nmcli con up static-eth
     run_cmd "Set static-eth priority to 100" \
         nmcli con modify static-eth connection.autoconnect-priority 100
-    run_cmd "Set Wired connection 1 priority to 50" \
-        nmcli con modify "Wired connection 1" connection.autoconnect-priority 50
-
-    run_cmd "Enable autoconnect on static-eth" \
-        nmcli con modify static-eth connection.autoconnect yes
-    run_cmd "Enable autoconnect on Wired connection 1" \
-        nmcli con modify "Wired connection 1" connection.autoconnect yes
-
     run_cmd "Set static-eth to retry 5 times" \
         nmcli con modify static-eth connection.autoconnect-retries 5
 fi
 
-# === Soracom GSM Setup via nmcli ===
-
-run_cmd "Add Soracom GSM connection" \
-    nmcli con add type gsm ifname "*" con-name soracom apn soracom.io user sora password sora
+# --- Soracom via NetworkManager GSM profile ---
+# This is optional and separate from PPP. It is kept guarded so it doesn't duplicate endlessly.
+if nmcli -t -f NAME con show | grep -Fxq "soracom"; then
+    log_step "NetworkManager Soracom profile already exists. Skipping add."
+else
+    run_cmd "Add Soracom GSM connection" \
+        nmcli con add type gsm ifname "*" con-name soracom apn soracom.io user sora password sora
+fi
 
 run_cmd "Restart NetworkManager" systemctl restart NetworkManager
+run_cmd "Enable Soracom autoconnect" nmcli con modify soracom connection.autoconnect yes
+run_cmd "Set Soracom connection priority" nmcli con modify soracom connection.autoconnect-priority 20
+run_cmd "Set Soracom to retry 5 times" nmcli con modify soracom connection.autoconnect-retries 5
 
-run_cmd "Set Soracom connection priority" \
-    nmcli con modify soracom connection.autoconnect-priority 20
+# --- PPP recovery attempt if Soracom peer exists ---
+SORACOM_PEER="$(find_soracom_peer)"
+if [[ -n "${SORACOM_PEER:-}" ]]; then
+    log_step "Found Soracom PPP peer: $SORACOM_PEER"
+    if ! ip a show ppp0 2>/dev/null | grep -q "inet "; then
+        run_cmd "Attempt to bring up Soracom PPP peer" pon "$SORACOM_PEER"
+        sleep 10
+    fi
+else
+    echo "WARNING: No Soracom PPP peer found after setup."
+    ERRORS+=("No Soracom PPP peer found")
+fi
 
-run_cmd "Enable Soracom autoconnect" \
-    nmcli con modify soracom connection.autoconnect yes
-
-run_cmd "Set Soracom to retry 5 times" \
-    nmcli con modify soracom connection.autoconnect-retries 5
-
-# === Post-Setup Check ===
+# --- Post-setup checks ---
+run_cmd "Show network devices" nmcli device status
+run_cmd "Show interfaces" ip a
+run_cmd "Show routes" ip route
 run_cmd "Check if Soracom modem ppp0 is up" ip a show ppp0
 run_cmd "Show default route" ip route show default
 
-# === Final Summary ===
 echo
 echo "===== DCOPS Setup Complete ====="
-if [ ${#ERRORS[@]} -eq 0 ]; then
-    echo "✅ All steps completed successfully!"
+if [[ ${#ERRORS[@]} -eq 0 ]]; then
+    echo "✅ All steps completed successfully."
 else
     echo "⚠️ The following steps had errors:"
     for step in "${ERRORS[@]}"; do
